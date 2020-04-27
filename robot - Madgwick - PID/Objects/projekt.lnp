@@ -1,0 +1,25 @@
+--cpu=Cortex-M4.fp
+".\objects\main.o"
+".\objects\madgwickahrs.o"
+".\objects\stm32f3xx_hal.o"
+".\objects\stm32f3xx_hal_cortex.o"
+".\objects\stm32f3xx_hal_dma.o"
+".\objects\stm32f3xx_hal_flash.o"
+".\objects\stm32f3xx_hal_flash_ex.o"
+".\objects\stm32f3xx_hal_gpio.o"
+".\objects\stm32f3xx_hal_i2c.o"
+".\objects\stm32f3xx_hal_i2c_ex.o"
+".\objects\stm32f3xx_hal_rcc.o"
+".\objects\stm32f3xx_hal_rcc_ex.o"
+".\objects\stm32f3xx_hal_spi.o"
+".\objects\stm32f3xx_hal_spi_ex.o"
+".\objects\stm32f3xx_hal_tim.o"
+".\objects\stm32f3xx_hal_tim_ex.o"
+".\objects\stm32f3xx_hal_uart.o"
+".\objects\stm32f3xx_hal_uart_ex.o"
+".\objects\stm32f3xx_hal_usart.o"
+".\objects\startup_stm32f303xc.o"
+".\objects\system_stm32f3xx.o"
+--ro-base 0x08000000 --entry 0x08000000 --rw-base 0x20000000 --entry Reset_Handler --first __Vectors --strict --summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
+--info sizes --info totals --info unused --info veneers
+--list ".\Listings\projekt.map" -o .\Objects\projekt.axf
