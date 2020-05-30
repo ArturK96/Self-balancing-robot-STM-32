@@ -1,2 +1,2 @@
-*.html linguist-vendored
-*.gs linguist-language=C
+* linguist-vendored
+*.html linguist-vendored=false
