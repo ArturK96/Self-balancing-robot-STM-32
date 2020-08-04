@@ -3,6 +3,33 @@
 #include "MadgwickAHRS.h"
 #include <math.h>
 #include <string.h>
+#include <stdbool.h>
+
+#define MPU_ADDRESS		0x68 // AD0 pin na 3.3 V in pol je 0x69, cene nevem (oz niti ne dela (?????))
+
+#define WHO_AM_I		0x75
+#define PWR_MGMT_1		0x6B
+#define SMPRT_DIV		0x19
+#define CONFIG			0x1A
+#define GYRO_CONFIG		0x1B
+#define ACC_CONFIG		0x1C
+#define INT_PIN_CFG		0x37
+#define INT_ENABLE		0x38
+
+#define ACCEL_XOUT_H	0x3B
+#define ACCEL_XOUT_L	0x3C
+#define ACCEL_YOUT_H	0x3D
+#define ACCEL_YOUT_L	0x3E
+#define ACCEL_ZOUT_H	0x3F
+#define ACCEL_ZOUT_L	0x40
+#define TEMP_OUT_H    0x41
+#define TEMP_OUT_L    0x42
+#define GYRO_XOUT_H		0x43
+#define GYRO_XOUT_L		0x44
+#define GYRO_YOUT_H		0x45
+#define GYRO_YOUT_L		0x46
+#define GYRO_ZOUT_H		0x47
+#define GYRO_ZOUT_L		0x48
 
 float pitch, roll, yaw, pitch1;
 uint16_t P1_16;
@@ -18,7 +45,9 @@ static int16_t gyro_x_offset = 0;
 static int16_t gyro_y_offset = 0;
 static int16_t gyro_z_offset = 0;
 static uint32_t samples = 0;
-float accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, acc_x, acc_y, acc_z;
+float accel_x, accel_y, accel_z, gyros_x, gyros_y, gyros_z; //, gyro_x, gyro_y, gyro_z, acc_x, acc_y, acc_z;
+int16_t gyro_x, gyro_y, gyro_z;
+int16_t acc_x, acc_y, acc_z;
 
 unsigned long error_stop;
 unsigned int proba;
@@ -67,7 +96,8 @@ volatile uint16_t przerwanie, licznik;
 //Sensor variables
 long acc_total_vector;
 int temperature;
-long gyro_x_cal, gyro_y_cal, gyro_z_cal;
+long gyro_x_cal, gyro_y_cal, gyro_z_cal = 0;
+long acc_x_cal, acc_y_cal, acc_z_cal = 0;
 long loop_timer;
 int lcd_loop_counter;
 float angle_pitch, angle_roll;
@@ -77,27 +107,29 @@ float angle_roll_acc, angle_pitch_acc;
 float angle_pitch_output, angle_roll_output;
 
 //UART variables
-uint8_t txData[12] = "123456789ABC";
-char rxData[8] = "ABCDEFGH", rxBuff[8];
+char UART2_Tx[42] = "1234567890qw", UART1_Tx[6];
+char UART2_Rx[8] = "ABCDEFGH", UART1_Rx[124], rxBuff[8];
 float HC05_angle;
-float throttle=0;
-float turn=0, turn_const=0, throttle_const = 0;
+float throttle, turn, turn_const, throttle_const = 0;
 //UART declarations
-void UART_Config(void);
-void DMA_Config(void);
-void Bluetooth_Data (int Size, char *Buffer);
+void UART_2_Config(void);
+void DMA_Ch6_Config(void);
+void UART_1_Config(void);
+void DMA_Ch5_Config(void);
 void Robot_Steering(void);
-void PID_Values_Receive(void);
-void PID_Values_Transmit(void);
 
-UART_HandleTypeDef myUARThandle;
+UART_HandleTypeDef UART2handle;
 DMA_HandleTypeDef myDMA_Uart2Handle;
+UART_HandleTypeDef UART1handle;
+DMA_HandleTypeDef myDMA_Uart1Handle;
+
+//Clock declarations
+void SystemClock_Config(void);
 
 //Sensor declarations
-void setup_mpu_6050_registers(void);
-void read_mpu_6050_data(void);
+void Setup_MPU6050_Registers(void);
+void Read_MPU6050_Data(void);
 void Calculate_Angle(void);
-void Calibrate_MPU6050(void);
 
 //Direction of motors declarations
 void GPIO_Direction_Config(void);
@@ -107,6 +139,7 @@ float PID_Controller(float kp, float ki, float kd, float error);
 float PID_Motor_Controller(float kp, float ki, float kd, float input, float set_point);
 float PID_Speed_Controller(float kp, float ki, float kd, float input, float set_point);
 float PID_Angle_Controller(float kp, float ki, float kd, float input, float set_point);
+void PID_Values_Set(void);
 
 //PWM declarations
 void PWM_Config(float kanal1, float kanal2);
@@ -154,155 +187,44 @@ uint32_t dupa;
 
  int main(void){
 	HAL_Init();
+	SystemClock_Config();
 	//GPIO_Config_SPI();
 	//SPI_Config();
 	GPIO_Config_I2C();
 	I2C_Config();
 	//Timer2_Init();
 	GPIO_Direction_Config();
-	//UART Initialise
-	UART_Config();
-	//DMA Initialise
-	DMA_Config();
+	Setup_MPU6050_Registers();
+	UART_2_Config();
+	DMA_Ch6_Config();
+	UART_1_Config();
+	DMA_Ch5_Config();
 	Encoders_Timer_34_config();
+	PID_Values_Set();
 	
 	
-
-	HAL_UART_Receive_DMA(&myUARThandle, (uint8_t *)rxData, 8);
-	
-////I2C init start
-	//1. Scan the I2C addresses
-	for(i=0; i<255; i++){
-		if(HAL_I2C_IsDeviceReady(&myI2Chandle, i, 1, 10) == HAL_OK){
-			HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_8);
-			break;
-		}
-	}
-	
-	setup_mpu_6050_registers();
-	
-    //Set angle measurement time counter                                        
-		SysTick_Config((16000000/2)/250);                                    //loop cycle is 4 ms
-		SysTick->CTRL = 0;
-		////////////////////////////////////
-	
-		P1 = 125; 		//65
-		I1 = 1.5;  		//2
-		D1 = 850;		//600
-	
-		P2 = 0.01; 	//0.015
-		I2 = 0;	//0.0001
-		D2 = 0.004; 	//0.003
-	
-		turn_const = 0;
-		throttle_const = 0;
+	HAL_UART_Receive_DMA(&UART2handle, (uint8_t *)UART2_Rx, 8);
+	HAL_UART_Receive_DMA(&UART1handle, (uint8_t *)UART1_Rx, 124);
 	
 	Main_Loop_Timer_6_Config();
 	Counting_Timer_7_Config();
 	
-	while(1){
-//		SysTick->CTRL = 0x07;                                                //Reset the loop timer
-//		
-//		if(number_of_clock_cycles_1>1480) omega_1=0, RPM_1=(omega_1*60)/(2*3.14), RPM_1_filtered = 0;
-//		if(number_of_clock_cycles_2>1480) omega_2=0, RPM_2=(omega_2*60)/(2*3.14), RPM_2_filtered = 0;
-//		
-//		read_mpu_6050_data();                                                //Read the raw acc and gyro data from the MPU-6050
-//		
-//		MadgwickAHRSupdateIMU(gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z);
-//		
-//		pitch = -(asinf(-2.0f * (q1*q3 - q0*q2))*(180/3.14))+0.8;
-//		//roll = atan2f(q0*q1 + q2*q3, 0.5f - q1*q1 - q2*q2)*(180/3.14);
-//		//yaw = atan2f(q1*q2 + q0*q3, 0.5f - q2*q2 - q3*q3)*(180/3.14);
-//		
-//		if (__HAL_UART_GET_FLAG(&myUARThandle, UART_FLAG_RXNE) == SET){
-//			HAL_UART_Receive(&myUARThandle, (uint8_t *)rxData, strlen(rxData), 50);
-//		}
-//		
-//		if(rxData[0] == '5'){
-//			rxData[0] = '0';
-//			HAL_UART_Transmit(&myUARThandle, (uint8_t *)txData, 12, 50);
-//		}
-//		
-//		
-//		Mean_RPM = (RPM_1_filtered+RPM_2_filtered)/2;
-//		Mean_RPM_filtered = 0.9*Mean_RPM_filtered + 0.1*Mean_RPM;
-//		
-//		
-//		
-//		Speed_PID = PID_Speed_Controller(P2, I2, D2, Mean_RPM, throttle_const);
-//		
-//		speed_graph = Speed_PID*19;
-//		
-//		Robot_Steering();
-//		PID_Values_Receive();
-//		PID_Values_Transmit();
-//		
-//		angle_1 = pitch + Speed_PID; // + odchylenie krokow
-//		
-//		angle_graph = pitch*8*4;
-//		
-//		if((-pitch>4 && -pitch<5) || (-pitch>-5 && -pitch<-4)) start_0 = 1;
-//		if(start_0==1 && -pitch<0.2 && -pitch>-0.2) start_1 = 1;
-//		if(start_1 == 1){
-//			Angle_PID = PID_Angle_Controller(P1, I1, D1, angle_1, 0);
-//			Power1 = PID_Motor_Controller(1, 0, 0, Angle_PID + turn_const, 0);//+ RPM_1_filtered 
-//			Power2 = PID_Motor_Controller(1, 0, 0, Angle_PID - turn_const, 0);//+ RPM_2_filtered 
-//		}
-//		
-//		
-//		if(pitch>20 || pitch<-20) Power1=0, Power2=0;
-//		
-//////////////////Parsowanie tablicy znakow////////////////
-//		for(uint8_t i=0; i<8; i++){
-//			uint8_t out = 0;
-//			uint8_t k=0;
-//			if(out == 1) break;
-//			if(rxData[i] == 'X'){
-//				for(uint8_t j=0; j<8; j++){
-//					if((i+j)>7){
-//						i=0;
-//						k=0;
-//					}
-//					rxBuff[j] = rxData[i+k];
-//					k++;
-//					if(j==7) out = 1;
-//				} 
-//			}
-//		}
-//////////////////Parsowanie tablicy znakow////////////////
-//		
-//		throttle = (rxBuff[1]-48)*100 + (rxBuff[2]-48)*10 + (rxBuff[3]-48)*1;
-//		if(throttle<100 || throttle>300) throttle = 170;
-//		throttle_const = -(throttle - 170);
-//		
-//		turn = (rxBuff[5]-48)*100 + (rxBuff[6]-48)*10 + (rxBuff[7]-48)*1;
-//		if(turn<100 || turn>300) turn = 170;
-//		turn_const = turn - 170;
-//		
-//		PWM_Config(Power1, Power2);//(Power1, Power2);
-//		
-//////frequency of angle reading 4 ms (250 Hz)
-//		while(systickFlag !=1);                                             //Wait until the loop_timer reaches 4000us (250Hz) before starting the next loop                         
-//		GPIOE->ODR ^= GPIO_ODR_8;
-//		SysTick->CTRL = 0;                                                  //Reset the loop timer
-//		SysTick->VAL = 0;
-//		systickFlag = 0;
-//////////////////////////////////////////////	
-		}
+	while(1){}
 }
- 
+
+//Main loop functions
 void Main_Loop_Timer_6_Config(void){
 	__HAL_RCC_TIM6_CLK_ENABLE();
 	
 	htim6.Instance = TIM6;
-  htim6.Init.Prescaler = 0;
+  htim6.Init.Prescaler = 9-1;
   htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim6.Init.Period = 32000;
+  htim6.Init.Period = 32000-1;
   htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
 	HAL_TIM_Base_Init(&htim6);
 	//Enable Timer 6
 	HAL_TIM_Base_Start_IT(&htim6);
-	//Enable Timer 7 interrupt
+	//Enable Timer 6 interrupt
 	HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 0, 0);
 	HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
 }
@@ -312,81 +234,37 @@ void TIM6_DAC_IRQHandler(void){
 	HAL_TIM_IRQHandler(&htim6);
 	
 
-		read_mpu_6050_data();                                                //Read the raw acc and gyro data from the MPU-6050
-		
-		MadgwickAHRSupdateIMU(gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z);
-		
-		pitch = -(asinf(-2.0f * (q1*q3 - q0*q2))*(180/3.14))+0.8;
-		//roll = atan2f(q0*q1 + q2*q3, 0.5f - q1*q1 - q2*q2)*(180/3.14);
-		//yaw = atan2f(q1*q2 + q0*q3, 0.5f - q2*q2 - q3*q3)*(180/3.14);
-		
-		if (__HAL_UART_GET_FLAG(&myUARThandle, UART_FLAG_RXNE) == SET){
-			HAL_UART_Receive(&myUARThandle, (uint8_t *)rxData, strlen(rxData), 50);
-		}
-		
-		if(rxData[0] == '5'){
-			rxData[0] = '0';
-			HAL_UART_Transmit(&myUARThandle, (uint8_t *)txData, 12, 50);
-		}
-		
-		
-		Mean_RPM = (RPM_1+RPM_2)/2;
-		Mean_RPM_filtered = 0.9*Mean_RPM_filtered + 0.1*Mean_RPM;
-		
-		
-		
-		Speed_PID = PID_Speed_Controller(P2, I2, D2, Mean_RPM_filtered, throttle_const);
-		
-		speed_graph = Speed_PID*19;
-		
-		Robot_Steering();
-		PID_Values_Receive();
-		PID_Values_Transmit();
-		
-		angle_1 = pitch + Speed_PID; // + odchylenie krokow
-		
-		angle_graph = pitch*8*4;
-		
-		if((-pitch>4 && -pitch<5) || (-pitch>-5 && -pitch<-4)) start_0 = 1;
-		if(start_0==1 && -pitch<0.2 && -pitch>-0.2) start_1 = 1;
-		if(start_1 == 1){
-			Angle_PID = PID_Angle_Controller(P1, I1, D1, angle_1, 0);
-			Power1 = PID_Motor_Controller(1, 0, 0, Angle_PID + RPM_1 - turn_const, 0);
-			Power2 = PID_Motor_Controller(1, 0, 0, Angle_PID + RPM_2 + turn_const, 0);
-		}
-		
-		
-		if(pitch>20 || pitch<-20) Power1=0, Power2=0;
-		
-////////////////Parsowanie tablicy znakow////////////////
-		for(uint8_t i=0; i<8; i++){
-			uint8_t out = 0;
-			uint8_t k=0;
-			if(out == 1) break;
-			if(rxData[i] == 'X'){
-				for(uint8_t j=0; j<8; j++){
-					if((i+j)>7){
-						i=0;
-						k=0;
-					}
-					rxBuff[j] = rxData[i+k];
-					k++;
-					if(j==7) out = 1;
-				} 
-			}
-		}
-////////////////Parsowanie tablicy znakow////////////////
-		
-		throttle = (rxBuff[1]-48)*100 + (rxBuff[2]-48)*10 + (rxBuff[3]-48)*1;
-		if(throttle<100 || throttle>300) throttle = 170;
-		throttle_const = -(throttle - 170);
-		
-		turn = (rxBuff[5]-48)*100 + (rxBuff[6]-48)*10 + (rxBuff[7]-48)*1;
-		if(turn<100 || turn>300) turn = 170;
-		turn_const = turn - 170;
-		
-		PWM_Config(Power1, Power2);
+	Read_MPU6050_Data();
+	Calculate_Angle();
+	pitch = -angle_roll_output;
+
+//	MadgwickAHRSupdateIMU(gyros_x, gyros_y, gyros_z, accel_x, accel_y, accel_z);
+//	pitch = -(asinf(-2.0f * (q1*q3 - q0*q2))*(180/3.14))+0.8;
+//	roll = atan2f(q0*q1 + q2*q3, 0.5f - q1*q1 - q2*q2)*(180/3.14);
+//	yaw = atan2f(q1*q2 + q0*q3, 0.5f - q2*q2 - q3*q3)*(180/3.14);
 	
+	Mean_RPM = (RPM_1+RPM_2)/2;
+	Mean_RPM_filtered = 0.9*Mean_RPM_filtered + 0.1*Mean_RPM;
+	
+	Speed_PID = PID_Speed_Controller(P2, I2, D2, Mean_RPM_filtered, throttle_const);
+	angle_1 = pitch + Speed_PID; // + odchylenie krokow
+	
+	
+	if((-pitch>4 && -pitch<5) || (-pitch>-5 && -pitch<-4)) start_0 = 1;
+	if(start_0==1 && -pitch<0.2 && -pitch>-0.2) start_1 = 1;
+	if(start_1 == 1){
+		Angle_PID = PID_Angle_Controller(P1, I1, D1, angle_1, 0);
+		Power1 = PID_Motor_Controller(1, 0, 0, Angle_PID + RPM_1 - turn_const, 0);
+		Power2 = PID_Motor_Controller(1, 0, 0, Angle_PID + RPM_2 + turn_const, 0);
+	}
+	
+	if(pitch>20 || pitch<-20) Power1=0, Power2=0;
+	
+	Robot_Steering();
+	PWM_Config(Power1, Power2);
+
+//	sprintf(UART2_Tx, "pitch: %f\r\n", angle_roll_output);
+//	HAL_UART_Transmit(&myUARThandle, (uint8_t *)UART2_Tx, 42, 50);
 }
 
 //Encoders functions
@@ -523,25 +401,25 @@ void Encoders_Timer_34_config(void){
 
 
 //UART functions
-void UART_Config(void){
+void UART_2_Config(void){
 	__HAL_RCC_GPIOA_CLK_ENABLE();
 	__HAL_RCC_USART2_CLK_ENABLE();
 	
-	GPIO_InitTypeDef myUartDef;
-	myUartDef.Pin = GPIO_PIN_2 | GPIO_PIN_3;
-	myUartDef.Mode = GPIO_MODE_AF_PP;
-	myUartDef.Pull = GPIO_PULLUP;
-	myUartDef.Speed = GPIO_SPEED_FREQ_HIGH;
-	myUartDef.Alternate = GPIO_AF7_USART2;
-	HAL_GPIO_Init(GPIOA, &myUartDef);
+	GPIO_InitTypeDef uart2;
+	uart2.Pin = GPIO_PIN_2 | GPIO_PIN_3;
+	uart2.Mode = GPIO_MODE_AF_PP;
+	uart2.Pull = GPIO_PULLUP;
+	uart2.Speed = GPIO_SPEED_FREQ_HIGH;
+	uart2.Alternate = GPIO_AF7_USART2;
+	HAL_GPIO_Init(GPIOA, &uart2);
 	//UART Configuration
-	myUARThandle.Instance = USART2;
-	myUARThandle.Init.BaudRate = 9600;
-	myUARThandle.Init.Mode = UART_MODE_TX_RX;
-	myUARThandle.Init.WordLength = UART_WORDLENGTH_8B;
-	myUARThandle.Init.StopBits = UART_STOPBITS_1;
-	myUARThandle.Init.OverSampling = UART_OVERSAMPLING_16;
-	HAL_UART_Init(&myUARThandle);
+	UART2handle.Instance = USART2;
+	UART2handle.Init.BaudRate = 115200;
+	UART2handle.Init.Mode = UART_MODE_TX_RX;
+	UART2handle.Init.WordLength = UART_WORDLENGTH_8B;
+	UART2handle.Init.StopBits = UART_STOPBITS_1;
+	UART2handle.Init.OverSampling = UART_OVERSAMPLING_16;
+	HAL_UART_Init(&UART2handle);
 	
 	//Systick interrupt enable
 	HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq()/1000);
@@ -549,7 +427,7 @@ void UART_Config(void){
   HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
 }
 
-void DMA_Config(void){
+void DMA_Ch6_Config(void){
 	__HAL_RCC_DMA1_CLK_ENABLE();
 	myDMA_Uart2Handle.Instance = DMA1_Channel6;
 	myDMA_Uart2Handle.Init.Direction = DMA_PERIPH_TO_MEMORY;
@@ -562,11 +440,7 @@ void DMA_Config(void){
 	//myDMA_Uart2Handle.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
 	HAL_DMA_Init(&myDMA_Uart2Handle);
 	
-	__HAL_LINKDMA(&myUARThandle,hdmarx,myDMA_Uart2Handle);
-	
-	//Enable DMA1 Stream 5 interrupt
-  //HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
-	//HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
+	__HAL_LINKDMA(&UART2handle,hdmarx,myDMA_Uart2Handle);
 }
 
 void DMA1_Channel6_IRQHandler(void){
@@ -579,69 +453,85 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
   /* NOTE: This function Should not be modified, when the callback is needed,
            the HAL_UART_TxCpltCallback could be implemented in the user file
    */
-	HAL_UART_Transmit(&myUARThandle, (uint8_t *)rxData, strlen(rxData), 10);
+//	HAL_UART_Transmit(&UART2handle, (uint8_t *)UART2_Rx, strlen(UART2_Rx), 10);
+//	HAL_UART_Transmit(&UART1handle, (uint8_t *)UART1_Rx, strlen(UART1_Rx), 10);
 	
+	// moze dac przeliczanie czegos, moze parsowanie wiadomosci
+}
+
+void UART_1_Config(void){
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	__HAL_RCC_USART1_CLK_ENABLE();
+	
+	GPIO_InitTypeDef uart1;
+	uart1.Pin = GPIO_PIN_9 | GPIO_PIN_10;
+	uart1.Mode = GPIO_MODE_AF_PP;
+	uart1.Pull = GPIO_PULLUP;
+	uart1.Speed = GPIO_SPEED_FREQ_HIGH;
+	uart1.Alternate = GPIO_AF7_USART1;
+	HAL_GPIO_Init(GPIOA, &uart1);
+	//UART Configuration
+	UART1handle.Instance = USART1;
+	UART1handle.Init.BaudRate = 19200;
+	UART1handle.Init.Mode = UART_MODE_TX_RX;
+	UART1handle.Init.WordLength = UART_WORDLENGTH_8B;
+	UART1handle.Init.StopBits = UART_STOPBITS_1;
+	UART1handle.Init.OverSampling = UART_OVERSAMPLING_16;
+	HAL_UART_Init(&UART1handle);
+	
+	//Systick interrupt enable
+	HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq()/1000);
+  HAL_SYSTICK_CLKSourceConfig(SYSTICK_CLKSOURCE_HCLK);
+  HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
+}
+
+void DMA_Ch5_Config(void){
+	__HAL_RCC_DMA1_CLK_ENABLE();
+	myDMA_Uart1Handle.Instance = DMA1_Channel5;
+	myDMA_Uart1Handle.Init.Direction = DMA_PERIPH_TO_MEMORY;
+	myDMA_Uart1Handle.Init.PeriphInc = DMA_PINC_DISABLE;
+	myDMA_Uart1Handle.Init.MemInc = DMA_MINC_ENABLE;
+	myDMA_Uart1Handle.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+	myDMA_Uart1Handle.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+	myDMA_Uart1Handle.Init.Mode = DMA_CIRCULAR;
+	myDMA_Uart1Handle.Init.Priority = DMA_PRIORITY_LOW;
+	//myDMA_Uart1Handle.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+	HAL_DMA_Init(&myDMA_Uart1Handle);
+	
+	__HAL_LINKDMA(&UART1handle,hdmarx,myDMA_Uart1Handle);
+}
+
+void DMA1_Channel5_IRQHandler(void){
+  HAL_DMA_IRQHandler(&myDMA_Uart1Handle);
 }
 
 void Robot_Steering(void){
-	//Steering of the robot
-	if((rxData[0]=='L') && (rxData[1]=='F')){turn = -10;}
-	else if((rxData[0]=='R') && (rxData[1]=='T')){turn = +10;}
-	else if((rxData[0]=='F') && (rxData[1]=='W')){throttle = +17;}
-	else if((rxData[0]=='B') && (rxData[1]=='W')){throttle = -17;}
-	//else if(pulse_count_1
-	else {turn=0; throttle=0;}
-}
-
-void PID_Values_Receive(void){
-	//PID values settings
-	//PID_1 (angle)
-	if((rxData[0]=='P') && (rxData[1]=='1')) P1++, rxData[0]=0;
-	else if((rxData[0]=='p') &&(rxData[1]=='1')) P1--, rxData[0]=0;
-	if(P1<0) P1=0;
-	
-	if((rxData[0]=='I') && (rxData[1]=='1')) I1+=0.1, rxData[0]=0;
-	else if((rxData[0]=='i') && (rxData[1]=='1')) I1-=0.1, rxData[0]=0;
-	if(I1<0) I1=0;
-	
-	if((rxData[0]=='D') && (rxData[1]=='1')) D1++, rxData[0]=0;
-	else if((rxData[0]=='d') && (rxData[1]=='1')) D1--, rxData[0]=0;
-	if(D1<0) D1=0;
-	
-	//PID_2 (speed)
-	if((rxData[0]=='P') && (rxData[1]=='2')) P2+=0.01, rxData[0]=0;
-	else if((rxData[0]=='p') && (rxData[1]=='2')) P2-=0.01, rxData[0]=0;
-	if(P2<0) P2=0;
-	
-	if((rxData[0]=='I') && (rxData[1]=='2')) I2+=0.001, rxData[0]=0;
-	else if((rxData[0]=='i') && (rxData[1]=='2')) I2-=0.001, rxData[0]=0;
-	if(I2<0) I2=0;
-	
-	if((rxData[0]=='D') && (rxData[1]=='2')) D2+=0.01, rxData[0]=0;
-	else if((rxData[0]=='d') && (rxData[1]=='2')) D2-=0.01, rxData[0]=0;
-	if(D2<0) D2=0;
-}
-
-void PID_Values_Transmit(void){
-	//PID values send outside
-	P1_16 = P1*10; 
-	I1_16 = I1*10; 
-	D1_16 = D1*10;
-	P2_16 = P2*100000;
-	I2_16 = I2*100000;
-	D2_16 = D2*100000;
-	txData[0] = (P1_16 >> 8) & 0xFF;
-	txData[1] = (P1_16) & 0xFF;
-	txData[2] = (I1_16 >> 8) & 0xFF;
-	txData[3] = (I1_16) & 0xFF;
-	txData[4] = (D1_16 >> 8) & 0xFF;
-	txData[5] = (D1_16) & 0xFF;
-	txData[6] = (P2_16 >> 8) & 0xFF;
-	txData[7] = (P2_16) & 0xFF;
-	txData[8] = (I2_16 >> 8) & 0xFF;
-	txData[9] = (I2_16) & 0xFF;
-	txData[10] = (D2_16 >> 8) & 0xFF;
-	txData[11] = (D2_16) & 0xFF;
+////////////////Parsowanie tablicy znakow////////////////
+		for(uint8_t i=0; i<8; i++){
+			uint8_t out = 0;
+			uint8_t k=0;
+			if(out == 1) break;
+			if(UART2_Rx[i] == 'X'){
+				for(uint8_t j=0; j<8; j++){
+					if((i+j)>7){
+						i=0;
+						k=0;
+					}
+					rxBuff[j] = UART2_Rx[i+k];
+					k++;
+					if(j==7) out = 1;
+				} 
+			}
+		}
+////////////////Parsowanie tablicy znakow////////////////
+		
+		throttle = (rxBuff[1]-48)*100 + (rxBuff[2]-48)*10 + (rxBuff[3]-48)*1;
+		if(throttle<100 || throttle>300) throttle = 200;
+		throttle_const = -(throttle - 200)/4;
+		
+		turn = (rxBuff[5]-48)*100 + (rxBuff[6]-48)*10 + (rxBuff[7]-48)*1;
+		if(turn<100 || turn>300) turn = 200;
+		turn_const = (turn - 200)*2;
 }
 
 //I2C functions
@@ -1058,119 +948,182 @@ void GPIO_Direction_Config(void){
 	myPinInit.Pull = GPIO_NOPULL;
 	myPinInit.Speed = GPIO_SPEED_FREQ_HIGH;
 	HAL_GPIO_Init(GPIOC, &myPinInit);
-	
 }
+
+void PID_Values_Set(void){
+	// Angle PID
+	P1 = 50; 		//65
+	I1 = 1.5;  		//2
+	D1 = 850;		//600
+	// Speed PID
+	P2 = 0.1; 	//0.015
+	I2 = 0.001;
+	D2 = 0.03;
+}
+
 //MPU6050
-void read_mpu_6050_data(void){                                             //Subroutine for reading the raw gyro and accelerometer data
-  I2C_Read(0x3A);
-	
-	
-	// extract the raw values
-	accel_x_raw  = i2cBuff[2]  << 8 | i2cBuff[3];
-	accel_y_raw  = i2cBuff[4]  << 8 | i2cBuff[5];
-	accel_z_raw  = i2cBuff[6]  << 8 | i2cBuff[7];
-	mpu_temp_raw = i2cBuff[8]  << 8 | i2cBuff[9];
-	gyro_x_raw   = i2cBuff[10]  << 8 | i2cBuff[11];
-	gyro_y_raw   = i2cBuff[12] << 8 | i2cBuff[13];
-	gyro_z_raw   = i2cBuff[14] << 8 | i2cBuff[15];
+void Read_MPU6050_Data(void){                                             //Subroutine for reading the raw gyro and accelerometer data
+//  I2C_Read(0x3A);
+//	
+//	
+//	// extract the raw values
+//	accel_x_raw  = i2cBuff[2]  << 8 | i2cBuff[3];
+//	accel_y_raw  = i2cBuff[4]  << 8 | i2cBuff[5];
+//	accel_z_raw  = i2cBuff[6]  << 8 | i2cBuff[7];
+//	mpu_temp_raw = i2cBuff[8]  << 8 | i2cBuff[9];
+//	gyro_x_raw   = i2cBuff[10]  << 8 | i2cBuff[11];
+//	gyro_y_raw   = i2cBuff[12] << 8 | i2cBuff[13];
+//	gyro_z_raw   = i2cBuff[14] << 8 | i2cBuff[15];
 
-	
-	// calculate the offsets at power up
-	if(samples < 64) {
-		samples++;
-		return;
-	} else if(samples < 128) {
-		gyro_x_offset += gyro_x_raw;
-		gyro_y_offset += gyro_y_raw;
-		gyro_z_offset += gyro_z_raw;
-		samples++;
-		return;
-	} else if(samples == 128) {
-		gyro_x_offset /= 64;
-		gyro_y_offset /= 64;
-		gyro_z_offset /= 64;
-		samples++;
-	} else {
-		gyro_x_raw -= gyro_x_offset;
-		gyro_y_raw -= gyro_y_offset;
-		gyro_z_raw -= gyro_z_offset;
-	}
+//	
+//	// calculate the offsets at power up
+//	if(samples < 64) {
+//		samples++;
+//		return;
+//	} else if(samples < 128) {
+//		gyro_x_offset += gyro_x_raw;
+//		gyro_y_offset += gyro_y_raw;
+//		gyro_z_offset += gyro_z_raw;
+//		samples++;
+//		return;
+//	} else if(samples == 128) {
+//		gyro_x_offset /= 64;
+//		gyro_y_offset /= 64;
+//		gyro_z_offset /= 64;
+//		samples++;
+//	} else {
+//		gyro_x_raw -= gyro_x_offset;
+//		gyro_y_raw -= gyro_y_offset;
+//		gyro_z_raw -= gyro_z_offset;
+//	}
 
-	// convert accelerometer readings into G's
-	accel_x = accel_x_raw / 8192.0f;
-	accel_y = accel_y_raw / 8192.0f;
-	accel_z = accel_z_raw / 8192.0f;
+//	// convert accelerometer readings into G's
+//	accel_x = accel_x_raw / 8192.0f;
+//	accel_y = accel_y_raw / 8192.0f;
+//	accel_z = accel_z_raw / 8192.0f;
 
-	// convert temperature reading into degrees Celsius
-	float mpu_temp = mpu_temp_raw / 340.0f + 36.53f;
+//	// convert temperature reading into degrees Celsius
+//	float mpu_temp = mpu_temp_raw / 340.0f + 36.53f;
 
-	// convert gyro readings into Radians per second
-	gyro_x = gyro_x_raw / 939.650784f;
-	gyro_y = gyro_y_raw / 939.650784f;
-	gyro_z = gyro_z_raw / 939.650784f;
+//	// convert gyro readings into Radians per second
+//	gyro_x = gyro_x_raw / 939.650784f;
+//	gyro_y = gyro_y_raw / 939.650784f;
+//	gyro_z = gyro_z_raw / 939.650784f;
+
+	I2C_Read(ACCEL_XOUT_H-1);
+
+	acc_x = ((i2cBuff[2] << 8) | i2cBuff[3]);
+	acc_y = ((i2cBuff[4] << 8) | i2cBuff[5]);
+	acc_z = ((i2cBuff[6] << 8) | i2cBuff[7]);
+
+	gyro_x = ((i2cBuff[10] << 8) | i2cBuff[11]);
+	gyro_y = ((i2cBuff[12] << 8) | i2cBuff[13]);
+	gyro_z = ((i2cBuff[14] << 8) | i2cBuff[15]);
 
 }
 
-void setup_mpu_6050_registers(void){
-	I2C_Write(0x6B, 0x00);                    // exit sleep
-	I2C_Write(0x19, 109);                     // sample rate = 8kHz / 110 = 72.7Hz
-	I2C_Write(0x1B, 0x18);                    // gyro full scale = +/- 2000dps
-	I2C_Write(0x1C, 0x08);                    // accelerometer full scale = +/- 4g
-	//I2C_Write(0x38, 0x01);                    // enable INTA interrupt
+void Setup_MPU6050_Registers(void){
+	//Setup the MPU-6050
+	I2C_Write(PWR_MGMT_1, 0x00);
+	I2C_Write(GYRO_CONFIG, 0x08);
+	I2C_Write(ACC_CONFIG, 0x10);
+	I2C_Write(CONFIG, 0x03);
+	
+	for (int cal_int = 0; cal_int < 2000 ; cal_int ++){                  //Run this code 2000 times
+		Read_MPU6050_Data();                                              //Read the raw acc and gyro data from the MPU-6050
+		gyro_x_cal += gyro_x;                                              //Add the gyro x-axis offset to the gyro_x_cal variable
+		gyro_y_cal += gyro_y;                                              //Add the gyro y-axis offset to the gyro_y_cal variable
+		gyro_z_cal += gyro_z;                                              //Add the gyro z-axis offset to the gyro_z_cal variable
+		acc_x_cal += acc_x;
+		acc_y_cal += acc_y;
+		HAL_Delay(1);                                                          //Delay 3us to simulate the 250Hz program loop
+  }
+//  gyro_x_cal /= 2000;                                                  //Divide the gyro_x_cal variable by 2000 to get the avarage offset
+//  gyro_y_cal /= 2000;                                                  //Divide the gyro_y_cal variable by 2000 to get the avarage offset
+//  gyro_z_cal /= 2000;                                                  //Divide the gyro_z_cal variable by 2000 to get the avarage offset
+//	acc_x_cal /= 2000;
+//	acc_y_cal /= 2000;
+//	acc_z_cal = 0;
+	gyro_x_cal = -15;                                                  //Divide the gyro_x_cal variable by 2000 to get the avarage offset
+  gyro_y_cal = -257;                                                  //Divide the gyro_y_cal variable by 2000 to get the avarage offset
+  gyro_z_cal = -105;                                                  //Divide the gyro_z_cal variable by 2000 to get the avarage offset
+	acc_x_cal = 276;
+	acc_y_cal = -194;
+	acc_z_cal = 0;
+	
+
 }
 void Calculate_Angle(void){
-		gyro_x -= gyro_x_cal;                                                //Subtract the offset calibration value from the raw gyro_x value
-		gyro_y -= gyro_y_cal;                                                //Subtract the offset calibration value from the raw gyro_y value
-		gyro_z -= gyro_z_cal;                                                //Subtract the offset calibration value from the raw gyro_z value
+  gyro_x -= gyro_x_cal;                                                //Subtract the offset calibration value from the raw gyro_x value
+  gyro_y -= gyro_y_cal;                                                //Subtract the offset calibration value from the raw gyro_y value
+  gyro_z -= gyro_z_cal;                                                //Subtract the offset calibration value from the raw gyro_z value
+	acc_x -= acc_x_cal;
+	acc_y -= acc_y_cal;
+	acc_z -= acc_z_cal;
+	
+  //Gyro angle calculations
+  //0.0000611 = 1 / (250Hz / 65.5)
+  angle_pitch += gyro_x * 0.0000611;                                   //Calculate the traveled pitch angle and add this to the angle_pitch variable
+  angle_roll += gyro_y * 0.0000611;                                    //Calculate the traveled roll angle and add this to the angle_roll variable
   
-		//Gyro angle calculations
-		//0.0000611 = 1 / (250Hz / 65.5)
-		angle_pitch += gyro_x * 0.0000611;                                   //Calculate the traveled pitch angle and add this to the angle_pitch variable
-		angle_roll += gyro_y * 0.0000611;                                    //Calculate the traveled roll angle and add this to the angle_roll variable
-		
-		//0.000001066 = 0.0000611 * (3.142(PI) / 180degr) The Arduino sin function is in radians
-		angle_pitch += angle_roll * sin(gyro_z * 0.000001066);               //If the IMU has yawed transfer the roll angle to the pitch angel
-		angle_roll -= angle_pitch * sin(gyro_z * 0.000001066);               //If the IMU has yawed transfer the pitch angle to the roll angel
+  //0.000001066 = 0.0000611 * (3.142(PI) / 180degr) The Arduino sin function is in radians
+  angle_pitch += angle_roll * sin(gyro_z * 0.000001066);               //If the IMU has yawed transfer the roll angle to the pitch angel
+  angle_roll -= angle_pitch * sin(gyro_z * 0.000001066);               //If the IMU has yawed transfer the pitch angle to the roll angel
   
-		//Accelerometer angle calculations
-		acc_total_vector = sqrt((acc_x*acc_x)+(acc_y*acc_y)+(acc_z*acc_z));  //Calculate the total accelerometer vector
-		//57.296 = 1 / (3.142 / 180) The Arduino asin function is in radians
-		
-		if(acc_total_vector == 0 || ((float)acc_y/acc_total_vector) > 1) angle_pitch_acc = 57.296;
-		else angle_pitch_acc = asin((float)acc_y/acc_total_vector)* 57.296;       //Calculate the pitch angle
-		if(acc_total_vector == 0 || ((float)acc_x/acc_total_vector) > 1) angle_roll_acc = -57.296;
-		else angle_roll_acc = asin((float)acc_x/acc_total_vector)* -57.296;       //Calculate the roll angle
-		
-		//Place the MPU-6050 spirit level and note the values in the following two lines for calibration
-/*!!!!!*/		angle_pitch_acc -= 0.0;                                              //Accelerometer calibration value for pitch
-/*!!!!!*/		angle_roll_acc -= 0.0;                                               //Accelerometer calibration value for roll
+  //Accelerometer angle calculations
+  acc_total_vector = sqrt((acc_x*acc_x)+(acc_y*acc_y)+(acc_z*acc_z));  //Calculate the total accelerometer vector
+  //57.296 = 1 / (3.142 / 180) The Arduino asin function is in radians
+  angle_pitch_acc = asin((float)acc_y/acc_total_vector)* 57.296;       //Calculate the pitch angle
+  angle_roll_acc = asin((float)acc_x/acc_total_vector)* -57.296;       //Calculate the roll angle
+  
+  //Place the MPU-6050 spirit level and note the values in the following two lines for calibration
+  angle_pitch_acc -= 0.0;                                              //Accelerometer calibration value for pitch
+  angle_roll_acc -= 0.0;                                               //Accelerometer calibration value for roll
 
-		if(set_gyro_angles){                                                 //If the IMU is already started
-			angle_pitch = angle_pitch * 0.9996 + angle_pitch_acc * 0.0004;     //Correct the drift of the gyro pitch angle with the accelerometer pitch angle
-			angle_roll = angle_roll * 0.9996 + angle_roll_acc * 0.0004;        //Correct the drift of the gyro roll angle with the accelerometer roll angle
-		}
-		else{                                                                //At first start
-			angle_pitch = angle_pitch_acc;                                     //Set the gyro pitch angle equal to the accelerometer pitch angle 
-			angle_roll = angle_roll_acc;                                       //Set the gyro roll angle equal to the accelerometer roll angle 
-			set_gyro_angles = 1;                                               //Set the IMU started flag
-		}
-  
-		//To dampen the pitch and roll angles a complementary filter is used
-		angle_pitch_output = angle_pitch_output * 0.1 + angle_pitch * 0.9;   //Take 90% of the output pitch value and add 10% of the raw pitch value
-		angle_roll_output = angle_roll_output * 0.1 + angle_roll * 0.9;      //Take 90% of the output roll value and add 10% of the raw roll value
-  
-}
-void Calibrate_MPU6050(void){
-	for (int cal_int = 0; cal_int < 2000 ; cal_int ++){                  //Run this code 2000 times
-    read_mpu_6050_data();                                              //Read the raw acc and gyro data from the MPU-6050
-    gyro_x_cal += gyro_x;                                              //Add the gyro x-axis offset to the gyro_x_cal variable
-    gyro_y_cal += gyro_y;                                              //Add the gyro y-axis offset to the gyro_y_cal variable
-    gyro_z_cal += gyro_z;                                              //Add the gyro z-axis offset to the gyro_z_cal variable
-    delay_us(3);                                                          //Delay 3us to simulate the 250Hz program loop
+  if(set_gyro_angles){                                                 //If the IMU is already started
+    angle_pitch = angle_pitch * 0.9996 + angle_pitch_acc * 0.0004;     //Correct the drift of the gyro pitch angle with the accelerometer pitch angle
+    angle_roll = angle_roll * 0.9996 + angle_roll_acc * 0.0004;        //Correct the drift of the gyro roll angle with the accelerometer roll angle
   }
-	GPIOE->ODR &= ~GPIO_ODR_8;
-		gyro_x_cal /= 2000;                                                  //Divide the gyro_x_cal variable by 2000 to get the avarage offset
-		gyro_y_cal /= 2000;                                                  //Divide the gyro_y_cal variable by 2000 to get the avarage offset
-		gyro_z_cal /= 2000;                                                  //Divide the gyro_z_cal variable by 2000 to get the avarage offset
+  else{                                                                //At first start
+    angle_pitch = angle_pitch_acc;                                     //Set the gyro pitch angle equal to the accelerometer pitch angle 
+    angle_roll = angle_roll_acc;                                       //Set the gyro roll angle equal to the accelerometer roll angle 
+    set_gyro_angles = true;                                            //Set the IMU started flag
+  }
+  
+  //To dampen the pitch and roll angles a complementary filter is used
+  angle_pitch_output = angle_pitch_output * 0.9 + angle_pitch * 0.1;   //Take 90% of the output pitch value and add 10% of the raw pitch value
+  angle_roll_output = angle_roll_output * 0.9 + angle_roll * 0.1;      //Take 90% of the output roll value and add 10% of the raw roll value
+}
 
+//Clock
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Initializes the CPU, AHB and APB busses clocks 
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    
+  }
+  /** Initializes the CPU, AHB and APB busses clocks 
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  { 
+  }
 }

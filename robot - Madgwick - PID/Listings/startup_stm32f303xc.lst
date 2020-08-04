@@ -660,7 +660,7 @@ ARM Macro Assembler    Page 11
 Command Line: --debug --xref --diag_suppress=9931 --cpu=Cortex-M4.fp --apcs=int
 erwork --depend=.\objects\startup_stm32f303xc.d -o.\objects\startup_stm32f303xc
 .o -I.\RTE\Device\STM32F303VCTx -I.\RTE\_Target_1 -ID:\Keil_v5\Arm\Packs\ARM\CM
-SIS\5.5.1\CMSIS\Core\Include -ID:\Keil_v5\Arm\Packs\Keil\STM32F3xx_DFP\2.1.0\Dr
+SIS\5.6.0\CMSIS\Core\Include -ID:\Keil_v5\Arm\Packs\Keil\STM32F3xx_DFP\2.1.0\Dr
 ivers\CMSIS\Device\ST\STM32F3xx\Include -ID:\Keil_v5\Arm\Packs\Keil\STM32F3xx_D
 FP\2.1.0\Drivers\STM32F3xx_HAL_Driver\Inc -ID:\Keil_v5\Arm\Packs\Keil\STM32F3xx
 _DFP\2.1.0\Drivers\STM32F3xx_HAL_Driver\Inc\Legacy --predefine="__EVAL SETA 1" 
